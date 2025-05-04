@@ -64,19 +64,70 @@ public class MyApplicationContext {
 
     private void instantiateBeans(Set<Class<?>> classes) throws Exception {
         for (Class<?> cls : classes) {
-            Object instance = cls.getDeclaredConstructor().newInstance();
+            Constructor<?> constructorToUse = null;
+
+            // Find constructor with @Autowired, else default constructor
+            for (Constructor<?> constructor : cls.getDeclaredConstructors()) {
+                if (constructor.isAnnotationPresent(Autowired.class)) {
+                    constructorToUse = constructor;
+                    break;
+                }
+            }
+
+            if (constructorToUse == null) {
+                constructorToUse = cls.getDeclaredConstructor();
+            }
+
+            Object instance;
+            if (constructorToUse.getParameterCount() == 0) {
+                instance = constructorToUse.newInstance();
+            } else {
+                List<Object> args = new ArrayList<>();
+                for (Class<?> paramType : constructorToUse.getParameterTypes()) {
+                    Object dependency = beanMap.get(paramType);
+                    if (dependency == null) {
+                        throw new RuntimeException("Unsatisfied dependency for constructor: " + cls.getName());
+                    }
+                    args.add(dependency);
+                }
+                instance = constructorToUse.newInstance(args.toArray());
+            }
+
             beanMap.put(cls, instance);
         }
+
+        injectDependencies();
     }
 
-    private void injectDependencies() throws IllegalAccessException {
+    private void injectDependencies() throws Exception {
         for (Object bean : beanMap.values()) {
-            for (Field field : bean.getClass().getDeclaredFields()) {
+            Class<?> cls = bean.getClass();
+
+            // Field injection
+            for (Field field : cls.getDeclaredFields()) {
                 if (field.isAnnotationPresent(Autowired.class)) {
-                    Class<?> dependencyType = field.getType();
-                    Object dependency = beanMap.get(dependencyType);
+                    Object dependency = beanMap.get(field.getType());
+                    if (dependency == null) {
+                        throw new RuntimeException("Unsatisfied dependency for field: " + field.getName() + " in " + cls.getName());
+                    }
                     field.setAccessible(true);
                     field.set(bean, dependency);
+                }
+            }
+
+            // Method injection
+            for (Method method : cls.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(Autowired.class)) {
+                    List<Object> args = new ArrayList<>();
+                    for (Class<?> paramType : method.getParameterTypes()) {
+                        Object dependency = beanMap.get(paramType);
+                        if (dependency == null) {
+                            throw new RuntimeException("Unsatisfied dependency for method: " + method.getName() + " in " + cls.getName());
+                        }
+                        args.add(dependency);
+                    }
+                    method.setAccessible(true);
+                    method.invoke(bean, args.toArray());
                 }
             }
         }
